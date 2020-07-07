@@ -38,7 +38,7 @@
     </types>
     <types>
         <members>*</members>
-        <name>Profiles</name>
+        <name>Profile</name>
     </types>
     <version>48.0</version>
 </Package>
