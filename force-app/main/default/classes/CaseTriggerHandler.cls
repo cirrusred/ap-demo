@@ -4,7 +4,7 @@ public class CaseTriggerHandler {
     public static void start(Map<Id, Case> newCases, Map<Id, Case> oldCases){
         
         //Prepare a callout record, allowing tracking of callouts for cases
-        List<Case> pendingCaseCallouts = new List<Case>();
+        Set<Case> pendingCaseCallouts = new Set<Case>();
 
 		//Check each case, to ensure status has changed and is currently 'Closed'
         for(Case newCase : newCases.values()){

@@ -1,7 +1,6 @@
 public class CaseCalloutJobs implements Queueable, Database.AllowsCallouts { 
 
     private Set<Case> enqueuedCases { get; set; }
-    private Set<Case> actionedCases { get; set; }
     
     //Constructor, storing input list values for processing below
     public CaseCalloutJobs(Set<Case> inputCases){
@@ -20,7 +19,7 @@ public class CaseCalloutJobs implements Queueable, Database.AllowsCallouts {
         
         //Check each case, to ensure status has changed and is currently 'Closed'
         for(Case newCase : enqueuedCases){
-          
+          	system.debug('newCase: ' + newCase);
             //Set a timer for processing...
             Long timerStart = System.now().getTime();
             
@@ -30,22 +29,37 @@ public class CaseCalloutJobs implements Queueable, Database.AllowsCallouts {
                                                                  Response_Status__c = 'Pending',
                                                                  Request_Sent__c = DateTime.now());
            
-            //Prepare the HTTP request body            
+            //Prepare the HTTP request body     
             String reqBody = '{\"id\":\"' + newCase.Id + '\",\"agentid\":\"' + newCase.LastModifiedById + '\"}';
+            Map<String,String> reqBodyMap = new Map<String,String>{'id'=> newCase.Id,
+                                                                    'agentid'=>newCase.LastModifiedById};
+            
+            String rqMap = EncodingUtil.urlEncode((String) JSON.serialize(reqBodyMap), 'UTF-8');
+            
+			//prepare the HTTP POST request
+            Http h = new Http();
+            HttpRequest request = new HttpRequest();
+            request.setMethod('POST');
+            request.setHeader('Content-Type', 'application/json');
+            request.setEndpoint('https://nfapihub.herokuapp.com/');
+            request.setBody(rqMap);
+            request.setTimeout(6000);
+            request.setHeader('id', newCase.Id);
+            request.setHeader('agentid', newCase.LastModifiedById);
             
             try{
-                //prepare the HTTP POST request
-                Http h = new Http();
-                HttpRequest request = new HttpRequest();
-                request.setMethod('POST');
-                request.setEndpoint('https://nfapihub.herokuapp.com/');
-                request.setBody(reqBody);
-                request.setTimeout(6000);
+                
                 HttpResponse response = h.send(request);
-                                
+                system.debug('=== ' + response.getBody());
                 //If Response = 200, everything is OK
                 if(response.getStatusCode() == 200){
                     caseCallOutStatus.Response_Status__c = 'OK';
+                    
+                    Map<String, Object> responseMap = (Map<String, Object>)JSON.deserializeUntyped(response.getBody());
+                    if(responseMap.containsKey('secretKey')){
+                        caseCallOutStatus.Secret_Key__c = string.valueOf(responseMap.get('secretKey'));
+                    }
+                    
                 //Else Reponse = Error
                 }else{
                     caseCallOutStatus.Response_Status__c = 'Error';
@@ -57,6 +71,7 @@ public class CaseCalloutJobs implements Queueable, Database.AllowsCallouts {
             }
             catch(Exception e){
                 caseCallOutStatus.Response_Status__c = 'Failed ';
+                caseCallOutStatus.Response_Text__c = 'Exception found: ' + e.getStackTraceString();
                 
             }
             
@@ -71,12 +86,10 @@ public class CaseCalloutJobs implements Queueable, Database.AllowsCallouts {
            	//trigger.new can have up to 200 records, though salesforce has a limit of 100 callouts
            	//so process up to 100, and then remove the cases already processed, and enqueue another job
             if(i < 100){
-	            actionedCases.add(newCase);
+                enqueuedCases.remove(newCase);
             }
             else{
-                //remove the already actioned cases
-                enqueuedCases.removeAll(actionedCases);
-                //exit the loop
+                //exit the loop to then continue via a new enqueue job
                 break;
             }
             
@@ -85,14 +98,30 @@ public class CaseCalloutJobs implements Queueable, Database.AllowsCallouts {
         
         //now insert the Case Callouts up to where processed
         if(!caseCallouts.isEmpty()){
-            insert caseCallouts;
+            //insert the Case Callout records (AlOrNothing = false, to allow partial inserts if errors)
+            database.insert(caseCallouts, false);
             
+            List<Case> updateCases = new List<Case>();
+            //for each case callout, if secret key returned, update the parent case
+            for(Case_Callout__c cc : caseCallouts){
+                system.debug('cc.Secret_Key__c: ' + cc.Secret_Key__c);
+                if(cc.Secret_Key__c != '' && cc.Secret_Key__c != null){
+                	updateCases.add(new Case(Id=cc.Case__c,Secret_Key__c=cc.Secret_Key__c));
+                }
+            }
+            
+            //if secret key returned, then update cases
+            if(!updateCases.isempty()){
+                database.update(updateCases, false);
+            }
         }
         
         //if the enqueuedCases set still contains records, then enqueue another job
-        if(!enqueuedCases.isEmpty()){
+        //this helps with 100x callout per transaction limit
+        if(!enqueuedCases.isEmpty() && !Test.isRunningTest()){
             System.enqueueJob(new CaseCalloutJobs(enqueuedCases));
         }
         
 	}
+    
 }
